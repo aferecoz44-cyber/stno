@@ -4,37 +4,229 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Redirect</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+        html, body {
+      margin: 0; padding: 0; height: 100%;
+      font-family: 'SF Mono', 'Fira Code', 'Courier New', monospace;
+      background: #0a0c10;
+      color: #c9d1d9;
+      overflow: hidden;
+    }
+
+        #preloader {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 28px;
+      transition: opacity 0.4s ease;
+    }
+    #preloader.hidden { opacity: 0; pointer-events: none; }
+
+        /* Кольцо-спиннер */
+    .spinner-wrap {
+      position: relative;
+      width: 56px; height: 56px;
+    }
+    .spinner-wrap svg {
+      position: absolute; inset: 0;
+      animation: spin 1.1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+        .spinner-wrap .track {
+      stroke: rgba(255,255,255,0.07);
+    }
+    .spinner-wrap .arc {
+      stroke: #58a6ff;
+      stroke-linecap: round;
+      filter: drop-shadow(0 0 6px #58a6ff88);
+    }
+
+        /* Текст статуса */
+    .status {
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      opacity: 0.6;
+      text-transform: uppercase;
+    }
+
+        /* Прогресс-бар */
+    .progress-track {
+      width: 180px; height: 2px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #1f6feb, #58a6ff);
+      border-radius: 2px;
+      transition: width 0.4s ease;
+      box-shadow: 0 0 8px #58a6ff66;
+    }
+
+        /* Блок ошибки */
+    .error-box {
+      max-width: 380px;
+      text-align: center;
+      padding: 32px 28px;
+      border: 1px solid rgba(248, 81, 73, 0.3);
+      border-radius: 8px;
+      background: rgba(248, 81, 73, 0.05);
+    }
+    .error-icon {
+      font-size: 28px;
+      margin-bottom: 12px;
+      display: block;
+    }
+    .error-title {
+      font-size: 13px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #f85149;
+      margin-bottom: 10px;
+      font-weight: 600;
+    }
+    .error-msg {
+      font-size: 13px;
+      color: rgba(201, 209, 217, 0.7);
+      line-height: 1.6;
+    }
+
+        /* Фоновая сетка */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(88,166,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(88,166,255,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+    }
+  </style>
 </head>
 <body>
 <script>
 (function () {
   'use strict';
 
-    // --- Конфигурация ---
+    // ── Конфигурация ──────────────────────────────────────────────────────────
   var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwE_6nkJC0qLgGs02NYEazRSFqql8hF3NkbruL9qJyk0j3uS9G4u9J4WICuRFCM9eCoHA/exec';
+  var TIMEOUT_MS = 12000; // 12 секунд максимум
 
-    // --- 1. Получаем параметры Q и mle из GET ---
+    // ── Параметры из URL ──────────────────────────────────────────────────────
   var params = new URLSearchParams(window.location.search);
-  var Q = params.get('Q');
+  var Q   = params.get('Q');
   var mle = params.get('mle');
 
-    // --- 2. Инжектим стили и разметку прелоадера ---
-  var style = document.createElement('style');
-  style.textContent = [
-    'html, body {',
-    '  margin: 0; padding: 0; height: 100%;',
-    '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;',
-    '  background: #0f1115; color: #e6e6e6;',
-    '  overflow: hidden;',
-    '}',
-    '#preloader {',
-    '  position: fixed; inset: 0;',
-    '  display: flex; flex-direction: column;',
-    '  align-items: center; justify-content: center;',
-    '  gap: 24px;',
-    '  transition: opacity .3s ease;',
-    '}',
-    '#preloader.hidden { opacity: 0; pointer-events: none; }',
+    // ── DOM: прелоадер ────────────────────────────────────────────────────────
+  var preloader = document.createElement('div');
+  preloader.id = 'preloader';
+  preloader.innerHTML =
+    '<div class="spinner-wrap">' +
+      '<svg viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg" width="56" height="56">' +
+        '<circle class="track" cx="28" cy="28" r="22" stroke-width="3"/>' +
+        '<path class="arc" d="M28 6 A22 22 0 0 1 50 28" stroke-width="3"/>' +
+      '</svg>' +
+    '</div>' +
+    '<div class="status" id="status-text">Инициализация…</div>' +
+    '<div class="progress-track"><div class="progress-fill" id="progress"></div></div>';
+  document.body.appendChild(preloader);
+
+    var statusEl   = document.getElementById('status-text');
+  var progressEl = document.getElementById('progress');
+
+    // ── Утилиты ───────────────────────────────────────────────────────────────
+  function setStatus(text, pct) {
+    if (statusEl)   statusEl.textContent = text;
+    if (progressEl) progressEl.style.width = (pct || 0) + '%';
+  }
+
+    function showError(text) {
+    preloader.innerHTML =
+      '<div class="error-box">' +
+        '<span class="error-icon">⚠</span>' +
+        '<div class="error-title">Ошибка</div>' +
+        '<div class="error-msg">' + text + '</div>' +
+      '</div>';
+  }
+
+    function redirectTo(url) {
+    setStatus('Переход…', 100);
+    preloader.classList.add('hidden');
+    setTimeout(function () {
+      window.location.replace(url);
+    }, 200);
+  }
+
+    // ── Валидация ─────────────────────────────────────────────────────────────
+  if (!Q || !mle) {
+    showError('Отсутствуют обязательные параметры запроса.<br>Проверьте ссылку и попробуйте снова.');
+    return;
+  }
+
+    // ── JSONP-запрос ──────────────────────────────────────────────────────────
+  // Apps Script не отдаёт Access-Control-Allow-Origin, поэтому используем
+  // JSONP через <script>: браузер не применяет CORS к тегам <script>.
+  setStatus('Запрос…', 20);
+
+    var cbName  = '_gsProxy_' + Date.now();
+  var timeoutId;
+  var done    = false;
+
+    function cleanup() {
+    done = true;
+    clearTimeout(timeoutId);
+    delete window[cbName];
+    var el = document.getElementById('__jsonp__');
+    if (el) el.parentNode.removeChild(el);
+  }
+
+    // Callback, который вызовет Apps Script
+  window[cbName] = function (data) {
+    cleanup();
+    setStatus('Обработка…', 80);
+
+        if (data && data.url) {
+      setStatus('Перенаправление…', 95);
+      redirectTo(data.url);
+    } else {
+      var msg = (data && data.error) ? data.error : 'Сервер не вернул ссылку для перехода.';
+      showError(msg);
+    }
+  };
+
+    // Таймаут
+  timeoutId = setTimeout(function () {
+    if (done) return;
+    cleanup();
+    showError('Превышено время ожидания ответа.<br>Попробуйте обновить страницу.');
+  }, TIMEOUT_MS);
+
+    // Вставляем <script> тег — сам и делает запрос
+  var qs = 'Q='        + encodeURIComponent(Q)
+         + '&mle='     + encodeURIComponent(mle)
+         + '&callback=' + encodeURIComponent(cbName);
+
+    var script  = document.createElement('script');
+  script.id   = '__jsonp__';
+  script.src  = APPS_SCRIPT_URL + '?' + qs;
+  script.onerror = function () {
+    if (done) return;
+    cleanup();
+    showError('Не удалось выполнить запрос.<br>Проверьте соединение с интернетом.');
+  };
+
+    setStatus('Подключение…', 40);
+  document.body.appendChild(script);
+
+  })();
+</script>
+</body>
+</html>'#preloader.hidden { opacity: 0; pointer-events: none; }',
     '.spinner {',
     '  width: 48px; height: 48px;',
     '  border: 3px solid rgba(255,255,255,0.12);',
